@@ -1,0 +1,22 @@
+# 環境変数（Cloudflare Tunnelトークン等の秘匿情報）
+.env
+
+# モデル・重みファイル（サイズが大きいため管理対象外。README参照）
+models/*
+!models/.gitkeep
+
+# 生成された画像
+output/*
+!output/.gitkeep
+
+# サードパーティ拡張機能
+extensions/*
+!extensions/.gitkeep
+
+# 拡張機能の状態スナップショット
+config/config_states/*
+!config/config_states/.gitkeep
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
