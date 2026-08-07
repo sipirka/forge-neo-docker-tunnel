@@ -205,6 +205,4 @@ docker compose up -d --build
 
 ## ライセンス
 
-このリポジトリ自体（Dockerfile / compose.yml / nginx設定などのデプロイ構成一式）にはまだライセンスを設定していない。公開する際は用途に応じて `LICENSE` の追加を検討のこと。
-
 ビルド時にクローンされる WebUI 本体（および遡って AUTOMATIC1111/stable-diffusion-webui）は **AGPL-3.0** である。AGPLはネットワーク経由の提供にもソース開示義務が及ぶため、改変した上で外部公開・運用する場合は留意すること。
