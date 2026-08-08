@@ -42,6 +42,8 @@ services:
     networks:
       forge-neo-net:
         ipv4_address: 172.18.0.10
+        aliases:
+          - forge-neo
 
   #─────────────────────────────────────────────
   #  Reverse Proxy (ポート秘匿用)
