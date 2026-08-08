@@ -1,0 +1,77 @@
+services:
+  forge-neo:
+    image: ghcr.io/sipirka/forge-neo-docker-tunnel:20260807-rtx30
+    container_name: forge-neo
+    command: 
+    runtime: nvidia
+    restart: unless-stopped
+    ports:
+      - "7860:7860/tcp"
+    volumes:
+      - ./extensions:/app/sd-webui-forge-neo/extensions
+      - ./models:/app/sd-webui-forge-neo/models
+      - ./output:/app/sd-webui-forge-neo/output
+      - ./config/config.json:/app/sd-webui-forge-neo/config.json
+      - ./config/ui-config.json:/app/sd-webui-forge-neo/ui-config.json
+      - ./config/config_states:/app/sd-webui-forge-neo/config_states
+      - ./entrypoint.sh:/app/sd-webui-forge-neo/entrypoint.sh
+    cap_drop:
+      - ALL
+    cap_add:
+    #  - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - "node.labels.iface != extern"
+      restart_policy:
+        condition: unless-stopped
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    networks:
+      forge-neo-net:
+        ipv4_address: 172.18.0.10
+        aliases:
+          - forge-neo
+
+  #─────────────────────────────────────────────
+  #  Reverse Proxy (ポート秘匿用)
+  #─────────────────────────────────────────────
+  sd-webui-proxy:
+    image: nginx:alpine
+    container_name: sd-webui-proxy
+    restart: unless-stopped
+    volumes:
+      - ./nginx/sd-webui.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - forge-neo
+    networks:
+      forge-neo-net:
+        ipv4_address: 172.18.0.20
+
+  #─────────────────────────────────────────────
+  #  Cloudflare Tunnel
+  #─────────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: sd-webui-tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN}"
+    depends_on:
+      - forge-neo
+    networks:
+      - forge-neo-net
+    restart: unless-stopped
+
+networks:
+  forge-neo-net:
+    name: forge-neo-net
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
