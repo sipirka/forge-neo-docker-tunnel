@@ -2,7 +2,7 @@ services:
   forge-neo:
     image: ghcr.io/sipirka/forge-neo-docker-tunnel:20260807-rtx30
     container_name: forge-neo
-    command: 
+    #command: 
     runtime: nvidia
     restart: unless-stopped
     ports:
