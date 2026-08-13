@@ -108,6 +108,7 @@ jobs:
 
       # ---- Nunchaku ----
       - name: Build Nunchaku wheel
+        shell: bash
         run: |
           cd /tmp/build
           . ./venv/bin/activate
