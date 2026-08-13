@@ -1,0 +1,91 @@
+name: Build and push Docker image (ghcr.io)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_suffix:
+        description: "イメージタグの接尾辞"
+        required: true
+        default: "rtx40-50"
+      cuda_version:
+        description: "DockerfileのCUDA_VERSION と合わせる"
+        default: "13.0.3"
+      torch_version:
+        description: "DockerfileのTORCH_VERSION"
+        default: "2.13.0"
+      torch_index:
+        description: "DockerfileのTORCH_INDEX"
+        default: "cu130"
+      torch_cuda_arch_list:
+        description: "DockerfileのTORCH_CUDA_ARCH_LIST"
+        default: "8.9;12.0"
+      wheels_release_tag:
+        description: "build-wheels.yml で作成した wheel Release のタグ"
+        default: "wheels-cu130-torch2.13-cp313"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # 標準ランナーはディスク容量(14GB前後)が厳しいため、CUDAベースの重いイメージを
+      # ビルドする前に不要なプリインストールツールを削除して空き容量を確保する
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set image tag
+        id: vars
+        run: |
+          DATE_TAG="$(date -u +%Y%m%d)-${{ inputs.tag_suffix }}"
+          echo "date_tag=${DATE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.ghcr.docker-publish
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.date_tag }}
+            ${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            CUDA_VERSION=${{ inputs.cuda_version }}
+            TORCH_VERSION=${{ inputs.torch_version }}
+            TORCH_INDEX=${{ inputs.torch_index }}
+            TORCH_CUDA_ARCH_LIST=${{ inputs.torch_cuda_arch_list }}
+            WHEELS_RELEASE_REPO=${{ github.repository }}
+            WHEELS_RELEASE_TAG=${{ inputs.wheels_release_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image summary
+        run: |
+          echo "### Pushed image" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.date_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${{ env.IMAGE_NAME }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
