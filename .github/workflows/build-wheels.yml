@@ -1,0 +1,171 @@
+name: Build CUDA wheels (SageAttention / SpargeAttn / Nunchaku)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "作成/更新するReleaseのタグ名"
+        required: true
+        default: "wheels-cu130-torch2.13-cp313"
+      cuda_version:
+        description: "元DockerfileのCUDA_VERSION と合わせる"
+        default: "13.0.3"
+      sageattention_ref:
+        description: "元DockerfileのSAGEATTENTION_REF"
+        default: "d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5"
+      spargeattn_ref:
+        description: "元DockerfileのSPARGEATTN_REF"
+        default: "ae5b629ebb41e41f86b3ea2ab5a3283f13ac151a"
+      nunchaku_ref:
+        description: "元DockerfileのNUNCHAKU_REF"
+        default: "v1.2.1"
+      torch_version:
+        description: "元DockerfileのTORCH_VERSION"
+        default: "2.13.0"
+      torch_index:
+        description: "元DockerfileのTORCH_INDEX"
+        default: "cu130"
+      torch_cuda_arch_list:
+        description: "元DockerfileのTORCH_CUDA_ARCH_LIST"
+        default: "8.9;12.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ inputs.cuda_version }}-cudnn-devel-ubuntu24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      FORCE_CUDA: "1"
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.torch_cuda_arch_list }}
+      MAX_JOBS: "1"
+      UV_CONCURRENT_DOWNLOADS: "16"
+      UV_CONCURRENT_INSTALLS: "16"
+      UV_NO_CACHE: "1"
+      UV_PYTHON_DOWNLOADS: automatic
+      UV_VERSION: "0.12.1"
+      PYTHON_VERSION: "3.13"
+      SAGEATTENTION_VERSION: "2.2.0"
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_NO_CACHE_DIR: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      VIRTUAL_ENV: /tmp/build/venv
+
+    steps:
+      - name: Install system build deps
+        run: |
+          apt update
+          apt install -y --no-install-recommends \
+            build-essential python3-dev libcairo2-dev pkg-config git curl wget ca-certificates
+          rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+      - name: Install uv (pinned version)
+        run: |
+          curl -LsSf "https://astral.sh/uv/${{ env.UV_VERSION }}/install.sh" | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Create venv + install torch
+        run: |
+          mkdir -p /tmp/build && cd /tmp/build
+          uv venv venv --python "${{ env.PYTHON_VERSION }}"
+          echo "/tmp/build/venv/bin" >> "$GITHUB_PATH"
+          . ./venv/bin/activate
+          uv pip install wheel pip setuptools packaging ninja triton
+          uv pip install "torch==${{ inputs.torch_version }}" torchvision \
+            --index-url "https://download.pytorch.org/whl/${{ inputs.torch_index }}"
+
+      # ---- SageAttention ----
+      - name: Build SageAttention wheel
+        run: |
+          cd /tmp/build
+          . ./venv/bin/activate
+          mkdir SageAttention && cd SageAttention
+          git init -q
+          git remote add origin https://github.com/thu-ml/SageAttention.git
+          git fetch --depth=1 origin "${{ inputs.sageattention_ref }}"
+          git checkout -q FETCH_HEAD
+          python setup.py bdist_wheel
+          mkdir -p /tmp/wheels
+          cp dist/*.whl /tmp/wheels/
+
+      # ---- SpargeAttn ----
+      - name: Build SpargeAttn wheel
+        run: |
+          cd /tmp/build
+          . ./venv/bin/activate
+          mkdir SpargeAttn && cd SpargeAttn
+          git init -q
+          git remote add origin https://github.com/thu-ml/SpargeAttn.git
+          git fetch --depth=1 origin "${{ inputs.spargeattn_ref }}"
+          git checkout -q FETCH_HEAD
+          sed -i '/"-Xcompiler", "-include,cassert"/d' setup.py
+          python setup.py bdist_wheel
+          cp dist/*.whl /tmp/wheels/
+
+      # ---- Nunchaku ----
+      - name: Build Nunchaku wheel
+        run: |
+          cd /tmp/build
+          . ./venv/bin/activate
+          uv pip install build
+          git clone --recurse-submodules --shallow-submodules --depth=1 \
+            --branch "${{ inputs.nunchaku_ref }}" https://github.com/nunchaku-tech/nunchaku.git
+          cd nunchaku
+          MAX_JOBS=1 NUNCHAKU_INSTALL_MODE=ALL NUNCHAKU_BUILD_WHEELS=1 \
+            python -m build --wheel --no-isolation
+          cp dist/*.whl /tmp/wheels/
+
+      - name: List built wheels
+        run: ls -la /tmp/wheels
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ inputs.release_tag }}
+          path: /tmp/wheels/*.whl
+          retention-days: 14
+
+      - name: Remove existing release with same tag (avoid stale wheel assets)
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_ID=$(curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null) || true
+          if [ -n "${RELEASE_ID}" ]; then
+            echo "既存Release(id=${RELEASE_ID}, tag=${TAG})を削除します"
+            curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}"
+          else
+            echo "タグ ${TAG} の既存Releaseは無いのでスキップします"
+          fi
+
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ${{ inputs.release_tag }}
+          body: |
+            自動ビルドされたCUDA wheel群 (SageAttention / SpargeAttn / Nunchaku)
+
+            - CUDA: ${{ inputs.cuda_version }}
+            - torch: ${{ inputs.torch_version }} (${{ inputs.torch_index }})
+            - python: cp${{ env.PYTHON_VERSION }} (Ubuntu 24.04 / manylinux互換ではない自前ビルド)
+            - TORCH_CUDA_ARCH_LIST: ${{ inputs.torch_cuda_arch_list }}
+            - SageAttention ref: ${{ inputs.sageattention_ref }} (v${{ env.SAGEATTENTION_VERSION }})
+            - SpargeAttn ref: ${{ inputs.spargeattn_ref }}
+            - Nunchaku ref: ${{ inputs.nunchaku_ref }}
+          files: /tmp/wheels/*.whl
