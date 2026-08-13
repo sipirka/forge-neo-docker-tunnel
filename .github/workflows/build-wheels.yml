@@ -115,6 +115,36 @@ jobs:
           git clone --recurse-submodules --shallow-submodules --depth=1 \
             --branch "${{ inputs.nunchaku_ref }}" https://github.com/nunchaku-tech/nunchaku.git
           cd nunchaku
+
+          # NUNCHAKU_INSTALL_MODE=ALL is required in this CPU-only container
+          # (FAST mode needs a physical GPU via torch.cuda.get_device_capability(),
+          # which isn't available here). However, nunchaku's setup.py hardcodes
+          # the "ALL" arch list to sm_75/80/86/89/120a/121a (6 archs) and
+          # completely ignores TORCH_CUDA_ARCH_LIST. Building CUTLASS/
+          # Block-Sparse-Attention kernels for all 6 archs is far too heavy for
+          # the standard 7GB/2-core GitHub-hosted runner and reliably OOM-kills
+          # the process (exit 137) partway through.
+          #
+          # Fix: patch get_sm_targets() so the "ALL" branch only targets the
+          # archs actually requested via TORCH_CUDA_ARCH_LIST (same list already
+          # used for SageAttention/SpargeAttn above), instead of the full
+          # hardcoded 6-arch list.
+          IFS=';' read -ra ARCHS <<< "${TORCH_CUDA_ARCH_LIST}"
+          SM_LIST=""
+          for a in "${ARCHS[@]}"; do
+            sm="${a//./}"
+            case "$sm" in
+              120|121) sm="${sm}a" ;;
+            esac
+            SM_LIST="${SM_LIST}\"${sm}\", "
+          done
+          SM_LIST="${SM_LIST%, }"
+          echo "Nunchaku SM targets restricted to: ${SM_LIST}"
+
+          sed -i "s/ret = \[\"75\", \"80\", \"86\", \"89\"\]/ret = [${SM_LIST}]/" setup.py
+          sed -i '/if support_sm120:/,+1d' setup.py
+          sed -i '/if support_sm121:/,+1d' setup.py
+
           MAX_JOBS=1 NUNCHAKU_INSTALL_MODE=ALL NUNCHAKU_BUILD_WHEELS=1 \
             python -m build --wheel --no-isolation
           cp dist/*.whl /tmp/wheels/
